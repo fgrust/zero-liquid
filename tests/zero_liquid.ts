@@ -21,8 +21,7 @@ describe("zero_liquid", () => {
 
   let mint = Keypair.generate();
   let mintAuthority = Keypair.generate();
-  let payer = provider.wallet.publicKey;
-  let userTokenAccount = null;
+  let payer = Keypair.generate();
   let bookAuthority = null;
   let bookAuthorityBump = null;
   let buyer = Keypair.generate();
@@ -33,10 +32,6 @@ describe("zero_liquid", () => {
   let saleBump = null;
   let NewToken = null;
   it("config", async () => {
-    userTokenAccount = await getAssociatedTokenAccountAddress(
-      payer,
-      mint.publicKey
-    );
     buyerTokenAccount = await getAssociatedTokenAccountAddress(
       buyer.publicKey,
       mint.publicKey
@@ -51,52 +46,53 @@ describe("zero_liquid", () => {
     );
     bookAuthority = _authority;
     bookAuthorityBump = _authorityBump;
-
     let [_sale, _saleBump] = await getSaleAddress(sellerTokenAccount);
     sale = _sale;
     saleBump = _saleBump;
 
-    // await web3.sendAndConfirmTransaction(
-    //   provider.connection,
-    //   new web3.Transaction().add(approve),
-    //   [seller]
-    // );
+    await provider.connection.confirmTransaction(
+      await provider.connection.requestAirdrop(
+        payer.publicKey,
+        5 * web3.LAMPORTS_PER_SOL
+      ),
+      "confirmed"
+    );
 
-    const tx = await program.rpc.initialize({
-      accounts: {},
-      instructions: [
-        web3.SystemProgram.createAccount({
-          fromPubkey: payer,
-          newAccountPubkey: mint.publicKey,
-          space: MintLayout.span,
-          lamports: await provider.connection.getMinimumBalanceForRentExemption(
-            MintLayout.span
-          ),
-          programId: TOKEN_PROGRAM_ID,
-        }),
-        //init the mint
-        Token.createInitMintInstruction(
-          TOKEN_PROGRAM_ID,
-          mint.publicKey,
-          0,
-          mintAuthority.publicKey,
-          mintAuthority.publicKey
+    let configTransaction = new web3.Transaction().add(
+      web3.SystemProgram.createAccount({
+        fromPubkey: payer.publicKey,
+        newAccountPubkey: mint.publicKey,
+        space: MintLayout.span,
+        lamports: await provider.connection.getMinimumBalanceForRentExemption(
+          MintLayout.span
         ),
-        createAssociatedTokenAccountInstruction(
-          mint.publicKey,
-          buyerTokenAccount,
-          buyer.publicKey,
-          payer
-        ),
-        createAssociatedTokenAccountInstruction(
-          mint.publicKey,
-          sellerTokenAccount,
-          seller.publicKey,
-          payer
-        ),
-      ],
-      signers: [mint],
-    });
+        programId: TOKEN_PROGRAM_ID,
+      }),
+      Token.createInitMintInstruction(
+        TOKEN_PROGRAM_ID,
+        mint.publicKey,
+        0,
+        mintAuthority.publicKey,
+        mintAuthority.publicKey
+      ),
+      createAssociatedTokenAccountInstruction(
+        mint.publicKey,
+        buyerTokenAccount,
+        buyer.publicKey,
+        payer.publicKey
+      ),
+      createAssociatedTokenAccountInstruction(
+        mint.publicKey,
+        sellerTokenAccount,
+        seller.publicKey,
+        payer.publicKey
+      )
+    );
+    await web3.sendAndConfirmTransaction(
+      provider.connection,
+      configTransaction,
+      [payer, mint]
+    );
 
     await provider.connection.confirmTransaction(
       await provider.connection.requestAirdrop(

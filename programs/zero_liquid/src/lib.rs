@@ -10,9 +10,7 @@ const SALE_SEED: &[u8] = b"sale";
 #[program]
 pub mod zero_liquid {
     use super::*;
-    pub fn initialize(ctx: Context<Initialize>) -> ProgramResult {
-        Ok(())
-    }
+
     pub fn post_sale(
         ctx: Context<PostSale>,
         sale_bump: u8,
@@ -48,9 +46,7 @@ pub mod zero_liquid {
             lamports,
         )?;
 
-        //could also add the delegation here but not really much of a reason to do so
-
-        //close the sale account if there are no more delegated tokens
+        //close the sale account if there are no more tokens delegated
         if ctx
             .accounts
             .seller_token_account
@@ -86,9 +82,6 @@ pub mod zero_liquid {
 }
 
 #[derive(Accounts)]
-pub struct Initialize {}
-
-#[derive(Accounts)]
 #[instruction(sale_bump: u8, book_authority_bump: u8)]
 pub struct PostSale<'info> {
     #[account(mut)]
@@ -113,6 +106,12 @@ pub struct PostSale<'info> {
     book_authority: AccountInfo<'info>,
     system_program: Program<'info, System>,
 }
+/*
+we only create sales where seller_token_account is the seed for sale pda
+all sales enforced with token account owner as seller and token account mint as sale mint
+this means if the token account matches in the seed, we know that the sale will have the token account's owner
+as the seller and its mint as the sale mint
+*/
 
 #[derive(Accounts)]
 pub struct TakeSale<'info> {
@@ -141,12 +140,8 @@ pub struct TakeSale<'info> {
     token_program: Program<'info, token::Token>,
     system_program: Program<'info, System>,
 }
-//this should enforce that the sale matches the token account, which means the other checks don't matter
-//seeds enforce that sale account contains token mint of the passed token account and that it has the seller as the owner of that account
 
 //this needs to be permissionless (or have a permless version) so token accounts without tokens can be closed
-//i could make it a pda based on the token account and run the sale that way?? get attribution without storing it. thanks toly
-//ok we should be good. only thing i would change is that if the seller signs it, then they should get the money, otherwise the closer gets it
 #[derive(Accounts)]
 pub struct CloseSale<'info> {
     #[account(mut)]
@@ -183,6 +178,31 @@ pub struct Sale {
     token_price: u64,
     bump: u8,
 }
+impl<'info> TakeSale<'info> {
+    pub fn into_transfer_tokens_to_buyer_context(
+        &self,
+    ) -> CpiContext<'_, '_, '_, 'info, token::Transfer<'info>> {
+        let cpi_program = self.token_program.to_account_info();
+        let cpi_accounts = token::Transfer {
+            from: self.seller_token_account.to_account_info(),
+            to: self.buyer_token_account.to_account_info(),
+            authority: self.book_authority.to_account_info(),
+        };
+        CpiContext::new(cpi_program, cpi_accounts)
+    }
+    pub fn into_transfer_lamports_to_seller_context(
+        &self,
+    ) -> CpiContext<'_, '_, '_, 'info, anchor_transfer::TransferLamports<'info>> {
+        let cpi_program = self.system_program.to_account_info();
+        let cpi_accounts = anchor_transfer::TransferLamports {
+            from: self.buyer.to_account_info(),
+            to: self.seller.to_account_info(),
+            system_program: self.system_program.clone(),
+        };
+        CpiContext::new(cpi_program, cpi_accounts)
+    }
+}
+
 //so how do u find the token account from the sale / vice versa
 //i guess u just have to use ATA or it won't work
 //token price (per token) in lamports
@@ -241,28 +261,5 @@ could add this later, right now just make it random
             tokenMintAddress.toBuffer(),
         ],
 */
-
-impl<'info> TakeSale<'info> {
-    pub fn into_transfer_tokens_to_buyer_context(
-        &self,
-    ) -> CpiContext<'_, '_, '_, 'info, token::Transfer<'info>> {
-        let cpi_program = self.token_program.to_account_info();
-        let cpi_accounts = token::Transfer {
-            from: self.seller_token_account.to_account_info(),
-            to: self.buyer_token_account.to_account_info(),
-            authority: self.book_authority.to_account_info(),
-        };
-        CpiContext::new(cpi_program, cpi_accounts)
-    }
-    pub fn into_transfer_lamports_to_seller_context(
-        &self,
-    ) -> CpiContext<'_, '_, '_, 'info, anchor_transfer::TransferLamports<'info>> {
-        let cpi_program = self.system_program.to_account_info();
-        let cpi_accounts = anchor_transfer::TransferLamports {
-            from: self.buyer.to_account_info(),
-            to: self.seller.to_account_info(),
-            system_program: self.system_program.clone(),
-        };
-        CpiContext::new(cpi_program, cpi_accounts)
-    }
-}
+//i could make it a pda based on the token account and run the sale that way?? get attribution without storing it. thanks toly
+//ok we should be good. only thing i would change is that if the seller signs it, then they should get the money, otherwise the closer gets it
