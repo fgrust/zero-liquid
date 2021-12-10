@@ -9,6 +9,8 @@ import {
   createAssociatedTokenAccountInstruction,
   getAssociatedTokenAccountAddress,
 } from "./helpers/tokenHelpers";
+import { getSaleAddress } from "./helpers/addresses";
+import { assert } from "chai";
 
 describe("zero_liquid", () => {
   // Configure the client to use the local cluster.
@@ -27,7 +29,8 @@ describe("zero_liquid", () => {
   let buyerTokenAccount = null;
   let seller = Keypair.generate();
   let sellerTokenAccount = null;
-  let sellOrder = web3.Keypair.generate();
+  let sale = null;
+  let saleBump = null;
   let NewToken = null;
   it("config", async () => {
     userTokenAccount = await getAssociatedTokenAccountAddress(
@@ -48,6 +51,10 @@ describe("zero_liquid", () => {
     );
     bookAuthority = _authority;
     bookAuthorityBump = _authorityBump;
+
+    let [_sale, _saleBump] = await getSaleAddress(sellerTokenAccount);
+    sale = _sale;
+    saleBump = _saleBump;
 
     // await web3.sendAndConfirmTransaction(
     //   provider.connection,
@@ -90,7 +97,6 @@ describe("zero_liquid", () => {
       ],
       signers: [mint],
     });
-    console.log("tx sig", tx);
 
     await provider.connection.confirmTransaction(
       await provider.connection.requestAirdrop(
@@ -121,44 +127,46 @@ describe("zero_liquid", () => {
 
   it("post sale", async () => {
     let tokenPrice = new BN(20);
-    const tx = await program.rpc.postSale(bookAuthorityBump, tokenPrice, {
-      accounts: {
-        seller: seller.publicKey,
-        sellerTokenAccount: sellerTokenAccount,
-        sellOrder: sellOrder.publicKey,
-        bookAuthority: bookAuthority,
-      },
-      instructions: [
-        await program.account.sellOrder.createInstruction(sellOrder),
-        Token.createApproveInstruction(
-          TOKEN_PROGRAM_ID,
-          sellerTokenAccount,
-          bookAuthority,
-          seller.publicKey,
-          [],
-          70
-        ),
-      ],
-      signers: [seller, sellOrder],
-    });
-    let newSellOrder = await program.account.sellOrder.fetch(
-      sellOrder.publicKey
+    const tx = await program.rpc.postSale(
+      saleBump,
+      bookAuthorityBump,
+      tokenPrice,
+      {
+        accounts: {
+          seller: seller.publicKey,
+          sellerTokenAccount: sellerTokenAccount,
+          sale: sale,
+          bookAuthority: bookAuthority,
+          systemProgram: SystemProgram.programId,
+        },
+        instructions: [
+          Token.createApproveInstruction(
+            TOKEN_PROGRAM_ID,
+            sellerTokenAccount,
+            bookAuthority,
+            seller.publicKey,
+            [],
+            70
+          ),
+        ],
+        signers: [seller],
+      }
     );
-    console.log(newSellOrder);
+    let newSellOrder = await program.account.sale.fetch(sale);
+    console.log("token price: ", newSellOrder.tokenPrice.toNumber());
   });
 
   it("take sale", async () => {
     await printLampsBalance(buyer.publicKey, provider.connection, "buyer");
-    let b4sellerTokenInfo = await NewToken.getAccountInfo(sellerTokenAccount);
-    console.log(b4sellerTokenInfo.delegatedAmount.toNumber());
-    let numTokens = new BN(70);
+    let num = 68;
+    let numTokens = new BN(num);
     const tx = await program.rpc.takeSale(bookAuthorityBump, numTokens, {
       accounts: {
         buyer: buyer.publicKey,
         buyerTokenAccount: buyerTokenAccount,
         seller: seller.publicKey,
         sellerTokenAccount: sellerTokenAccount,
-        sellOrder: sellOrder.publicKey,
+        sale: sale,
         bookAuthority: bookAuthority,
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: web3.SystemProgram.programId,
@@ -167,16 +175,71 @@ describe("zero_liquid", () => {
     });
     await printTokenBalance(buyerTokenAccount, provider.connection, "buyer");
     await printTokenBalance(sellerTokenAccount, provider.connection, "seller");
+    let buyerBalance = await provider.connection.getTokenAccountBalance(
+      buyerTokenAccount
+    );
 
-    await printLampsBalance(buyer.publicKey, provider.connection, "buyer");
+    assert(buyerBalance.value.uiAmount === num);
 
-    let sellerTokenInfo = await NewToken.getAccountInfo(sellerTokenAccount);
-    console.log(sellerTokenInfo.delegatedAmount.toNumber());
+    await printLampsBalance(
+      buyer.publicKey,
+      provider.connection,
+      "buyer after purchase"
+    );
+
+    // let sellerTokenInfo = await NewToken.getAccountInfo(sellerTokenAccount);
+    // console.log(sellerTokenInfo.delegatedAmount.toNumber());
   });
+
+  it("change sale price", async () => {
+    let newPrice = 18;
+    let newPriceBN = new BN(newPrice);
+    const tx = await program.rpc.changeSalePrice(newPriceBN, {
+      accounts: {
+        seller: seller.publicKey,
+        sale: sale,
+      },
+      signers: [seller],
+    });
+    let newSellOrder = await program.account.sale.fetch(sale);
+    assert(newSellOrder.tokenPrice.eq(newPriceBN));
+    console.log("new price: ", newSellOrder.tokenPrice.toNumber());
+  });
+
+  it("remove delegation and close sale", async () => {
+    const tx = await program.rpc.closeSale({
+      accounts: {
+        closer: buyer.publicKey,
+        seller: seller.publicKey,
+        sellerTokenAccount: sellerTokenAccount,
+        sale: sale,
+      },
+      instructions: [
+        Token.createRevokeInstruction(
+          TOKEN_PROGRAM_ID,
+          sellerTokenAccount,
+          seller.publicKey,
+          []
+        ),
+      ],
+      signers: [seller],
+    });
+  });
+
+  // it("close sale plain", async () => {
+  //   const tx = await program.rpc.closeSale({
+  //     accounts: {
+  //       closer: buyer.publicKey,
+  //       seller: seller.publicKey,
+  //       sellerTokenAccount: sellerTokenAccount,
+  //       sale: sale,
+  //     },
+  //   });
+  // });
 
   //throws error when the account gets properly closed
   // it("check if close", async () => {
-  //   let order = await program.account.sellOrder.fetch(sellOrder.publicKey);
+  //   let order = await program.account.sale.fetch(sale);
   //   console.log(order);
   // });
 });
@@ -207,3 +270,12 @@ this is only spl tokens and sol base
 
 
 */
+//with size 112, it costs 32 cents to make a new account (29 cents without token account key)
+//worth noting that u will be able to get the sol back when u close the sale account
+
+// let saleSize = program.account.sale.size;
+// console.log(saleSize);
+// let rent = await provider.connection.getMinimumBalanceForRentExemption(
+//   saleSize
+// );
+// console.log(rent / web3.LAMPORTS_PER_SOL);
