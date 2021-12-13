@@ -1,6 +1,11 @@
 import * as anchor from "@project-serum/anchor";
 import * as web3 from "@solana/web3.js";
-import { Keypair, SystemProgram, SYSVAR_RENT_PUBKEY } from "@solana/web3.js";
+import {
+  Keypair,
+  SystemProgram,
+  PublicKey,
+  SYSVAR_RENT_PUBKEY,
+} from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID, Token, MintLayout } from "@solana/spl-token";
 
 import { BN, Program } from "@project-serum/anchor";
@@ -11,6 +16,7 @@ import {
 } from "./helpers/tokenHelpers";
 import { getSaleAddress } from "./helpers/addresses";
 import { assert } from "chai";
+import * as BufferLayout from "@solana/buffer-layout";
 
 describe("zero_liquid", () => {
   // Configure the client to use the local cluster.
@@ -202,23 +208,42 @@ describe("zero_liquid", () => {
     console.log("new price: ", newSellOrder.tokenPrice.toNumber());
   });
 
-  it("remove delegation and close sale", async () => {
-    const tx = await program.rpc.closeSale({
-      accounts: {
-        closer: buyer.publicKey,
-        seller: seller.publicKey,
-        sellerTokenAccount: sellerTokenAccount,
-        sale: sale,
-      },
-      instructions: [
-        Token.createRevokeInstruction(
-          TOKEN_PROGRAM_ID,
-          sellerTokenAccount,
-          seller.publicKey,
-          []
-        ),
-      ],
-      signers: [seller],
+  // it("remove delegation and close sale", async () => {
+  //   const tx = await program.rpc.closeSale({
+  //     accounts: {
+  //       closer: seller.publicKey,
+  //       seller: seller.publicKey,
+  //       sellerTokenAccount: sellerTokenAccount,
+  //       sale: sale,
+  //     },
+  //     instructions: [
+  //       Token.createRevokeInstruction(
+  //         TOKEN_PROGRAM_ID,
+  //         sellerTokenAccount,
+  //         seller.publicKey,
+  //         []
+  //       ),
+  //     ],
+  //     signers: [seller],
+  //   });
+  // });
+
+  it("fetch sales for token", async () => {
+    let fetchingMint = mint.publicKey;
+    let sales = await fetchDecodedSalesForMint(
+      fetchingMint,
+      provider.connection
+    );
+    sales.forEach((sale) => {
+      printSale(sale);
+    });
+  });
+
+  it("fetch sales for wallet", async () => {
+    let wallet = seller.publicKey;
+    let sales = await fetchDecodedSalesForWallet(wallet, provider.connection);
+    sales.forEach((sale) => {
+      printSale(sale);
     });
   });
 
@@ -237,8 +262,118 @@ describe("zero_liquid", () => {
   // it("check if close", async () => {
   //   let order = await program.account.sale.fetch(sale);
   //   console.log(order);
+  //
   // });
 });
+
+export const ZERO_LIQUID_PROGRAM_ID = new web3.PublicKey(
+  "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+);
+export const fetchSalesForMint = async (
+  mint: web3.PublicKey,
+  connection: web3.Connection
+) => {
+  let config = {
+    filters: [
+      {
+        dataSize: 113,
+      },
+      {
+        memcmp: {
+          bytes: mint.toBase58(),
+          offset: 72,
+        },
+      },
+    ],
+  };
+  return connection
+    .getProgramAccounts(ZERO_LIQUID_PROGRAM_ID, config)
+    .then((responses) => {
+      return responses;
+    });
+};
+export const fetchSalesForWallet = async (
+  wallet: web3.PublicKey,
+  connection: web3.Connection
+) => {
+  let config = {
+    filters: [
+      {
+        dataSize: 113,
+      },
+      {
+        memcmp: {
+          bytes: wallet.toBase58(),
+          offset: 8,
+        },
+      },
+    ],
+  };
+  return connection
+    .getProgramAccounts(ZERO_LIQUID_PROGRAM_ID, config)
+    .then((responses) => {
+      return responses;
+    });
+};
+export const decodeSale = (data: Buffer, publicKey: PublicKey): Sale => {
+  let sale = SaleLayout.decode(data);
+  return {
+    publicKey: publicKey,
+    seller: new PublicKey(sale.seller),
+    tokenAccount: new PublicKey(sale.tokenAccount),
+    tokenMint: new PublicKey(sale.tokenMint),
+    tokenPrice: new BN(sale.tokenPrice),
+  };
+};
+export interface Sale {
+  publicKey: PublicKey;
+  seller: PublicKey;
+  tokenAccount: PublicKey;
+  tokenMint: PublicKey;
+  tokenPrice: BN;
+}
+export const fetchDecodedSalesForMint = async (
+  mint: PublicKey,
+  connection: web3.Connection
+) => {
+  return fetchSalesForMint(mint, connection).then((responses) => {
+    return responses.map((response) => {
+      return decodeSale(response.account.data, response.pubkey);
+    });
+  });
+};
+export const fetchDecodedSalesForWallet = async (
+  wallet: PublicKey,
+  connection: web3.Connection
+) => {
+  return fetchSalesForWallet(wallet, connection).then((responses) => {
+    return responses.map((response) => {
+      return decodeSale(response.account.data, response.pubkey);
+    });
+  });
+};
+export const printSale = (sale: Sale) => {
+  let s = {
+    publicKey: sale.publicKey.toBase58(),
+    seller: sale.seller.toBase58(),
+    tokenAccount: sale.seller.toBase58(),
+    tokenMint: sale.tokenMint.toBase58(),
+    tokenPrice: sale.tokenPrice.toString(),
+  };
+  console.log(s);
+  console.log(sale.tokenPrice.toString());
+};
+const publicKey = (property: string) => {
+  return BufferLayout.blob(32, property);
+};
+export const SaleLayout = BufferLayout.struct([
+  BufferLayout.seq(BufferLayout.u8(), 8, "discriminator"),
+  publicKey("seller"),
+  publicKey("tokenAccount"),
+  publicKey("tokenMint"),
+  BufferLayout.nu64("tokenPrice"),
+  BufferLayout.u8("bump"),
+]);
 
 const printTokenBalance = async (
   tokenAccount: web3.PublicKey,
@@ -256,13 +391,22 @@ const printLampsBalance = async (
   let balance = await connection.getBalance(address);
   console.log(name + " lamps: " + balance);
 };
+
+/*
+write out my fetches
+
+
+- get all sales for wallet
+- get all sales for token 
+  - (filter for active delegation)
+  - sort by price 
+
+*/
+
 /*
 
-let me get a token and delegate authority to a program account
-
-figure out how to take custody of funds
 this is only spl tokens and sol base
-
+can easily add buy orders 
 
 
 */

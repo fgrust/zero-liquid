@@ -1,5 +1,4 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program;
 use anchor_lang::AccountsClose;
 use anchor_spl::token;
 mod anchor_transfer;
@@ -10,7 +9,6 @@ const SALE_SEED: &[u8] = b"sale";
 #[program]
 pub mod zero_liquid {
     use super::*;
-
     pub fn post_sale(
         ctx: Context<PostSale>,
         sale_bump: u8,
@@ -18,10 +16,10 @@ pub mod zero_liquid {
         token_price: u64,
     ) -> ProgramResult {
         ctx.accounts.sale.seller = ctx.accounts.seller.key();
+        ctx.accounts.sale.token_account = ctx.accounts.seller_token_account.key();
         ctx.accounts.sale.token_mint = ctx.accounts.seller_token_account.mint.key();
         ctx.accounts.sale.token_price = token_price;
         ctx.accounts.sale.bump = sale_bump;
-
         Ok(())
     }
     pub fn take_sale(ctx: Context<TakeSale>, authority_bump: u8, num_tokens: u64) -> ProgramResult {
@@ -33,7 +31,6 @@ pub mod zero_liquid {
                 .with_signer(&[seeds]),
             num_tokens,
         )?;
-
         let lamports = ctx
             .accounts
             .sale
@@ -45,7 +42,6 @@ pub mod zero_liquid {
             ctx.accounts.into_transfer_lamports_to_seller_context(),
             lamports,
         )?;
-
         //close the sale account if there are no more tokens delegated
         if ctx
             .accounts
@@ -174,10 +170,17 @@ pub struct ChangeSalePrice<'info> {
 #[derive(Default)]
 pub struct Sale {
     seller: Pubkey,
+    token_account: Pubkey,
     token_mint: Pubkey,
     token_price: u64,
     bump: u8,
 }
+/*
+need all these attrs to filter on the client
+//could potentially use a subgraph for this i think??
+and just post bare minimum
+*/
+
 impl<'info> TakeSale<'info> {
     pub fn into_transfer_tokens_to_buyer_context(
         &self,
@@ -216,6 +219,14 @@ impl<'info> TakeSale<'info> {
 //but if people sell or undelegate u need to be able to close
 
 /*
+
+ok this is fucked up bc it will be p much impossible to find any of the token accounts outside of ATAs
+so my options are to enforce ATAs or to add the token account to it
+
+nice thing about non ATAs is u could do concentrated liquidity and it's not that much more cost, and u can
+so i think i need to add token account attr to this. not sure there's any other way
+can still leave the pda attr bc there's not really a benefit to taking it away
+
 
 alternatives:
 - set the token account in the sale instead of the seller
