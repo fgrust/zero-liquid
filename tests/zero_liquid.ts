@@ -17,6 +17,7 @@ import {
 import { getSaleAddress } from "./helpers/addresses";
 import { assert } from "chai";
 import * as BufferLayout from "@solana/buffer-layout";
+let BOOK_AUTHORITY_PK: PublicKey = web3.SystemProgram.programId;
 
 describe("zero_liquid", () => {
   // Configure the client to use the local cluster.
@@ -52,6 +53,7 @@ describe("zero_liquid", () => {
     );
     bookAuthority = _authority;
     bookAuthorityBump = _authorityBump;
+    BOOK_AUTHORITY_PK = _authority;
     let [_sale, _saleBump] = await getSaleAddress(sellerTokenAccount);
     sale = _sale;
     saleBump = _saleBump;
@@ -230,23 +232,15 @@ describe("zero_liquid", () => {
 
   it("fetch sales for token", async () => {
     let fetchingMint = mint.publicKey;
-    let sales = await fetchDecodedSalesForMint(
-      fetchingMint,
-      provider.connection
-    );
-    sales.forEach((sale) => {
-      printSale(sale);
-    });
+    let sales = await fetchSalesForMint(fetchingMint, provider.connection);
+    printSales(sales);
   });
 
   it("fetch sales for wallet", async () => {
     let wallet = seller.publicKey;
-    let sales = await fetchDecodedSalesForWallet(wallet, provider.connection);
-    sales.forEach((sale) => {
-      printSale(sale);
-    });
+    let sales = await fetchSalesForWallet(wallet, provider.connection);
+    printSales(sales);
   });
-
   // it("close sale plain", async () => {
   //   const tx = await program.rpc.closeSale({
   //     accounts: {
@@ -269,7 +263,7 @@ describe("zero_liquid", () => {
 export const ZERO_LIQUID_PROGRAM_ID = new web3.PublicKey(
   "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
 );
-export const fetchSalesForMint = async (
+export const fetchSaleAccountsForMint = async (
   mint: web3.PublicKey,
   connection: web3.Connection
 ) => {
@@ -292,7 +286,7 @@ export const fetchSalesForMint = async (
       return responses;
     });
 };
-export const fetchSalesForWallet = async (
+export const fetchSaleAccountsForWallet = async (
   wallet: web3.PublicKey,
   connection: web3.Connection
 ) => {
@@ -315,7 +309,10 @@ export const fetchSalesForWallet = async (
       return responses;
     });
 };
-export const decodeSale = (data: Buffer, publicKey: PublicKey): Sale => {
+export const decodeSaleAccount = (
+  data: Buffer,
+  publicKey: PublicKey
+): RawSale => {
   let sale = SaleLayout.decode(data);
   return {
     publicKey: publicKey,
@@ -325,43 +322,116 @@ export const decodeSale = (data: Buffer, publicKey: PublicKey): Sale => {
     tokenPrice: new BN(sale.tokenPrice),
   };
 };
-export interface Sale {
+export interface RawSale {
   publicKey: PublicKey;
   seller: PublicKey;
   tokenAccount: PublicKey;
   tokenMint: PublicKey;
   tokenPrice: BN;
 }
-export const fetchDecodedSalesForMint = async (
+export interface Sale {
+  publicKey: PublicKey;
+  seller: PublicKey;
+  tokenAccount: PublicKey;
+  tokenMint: PublicKey;
+  tokenPrice: BN;
+  amount: BN;
+}
+export interface Sales {
+  active: Sale[];
+  zero: Sale[];
+}
+
+export const fetchSalesForMint = async (
   mint: PublicKey,
   connection: web3.Connection
-) => {
-  return fetchSalesForMint(mint, connection).then((responses) => {
-    return responses.map((response) => {
-      return decodeSale(response.account.data, response.pubkey);
-    });
+): Promise<Sales> => {
+  return fetchSaleAccountsForMint(mint, connection).then(async (responses) => {
+    return toSales(responses, connection);
   });
 };
-export const fetchDecodedSalesForWallet = async (
+
+export const fetchSalesForWallet = async (
   wallet: PublicKey,
   connection: web3.Connection
-) => {
-  return fetchSalesForWallet(wallet, connection).then((responses) => {
-    return responses.map((response) => {
-      return decodeSale(response.account.data, response.pubkey);
-    });
-  });
+): Promise<Sales> => {
+  return fetchSaleAccountsForWallet(wallet, connection).then(
+    async (responses) => {
+      return toSales(responses, connection);
+    }
+  );
 };
+interface Response {
+  pubkey: anchor.web3.PublicKey;
+  account: anchor.web3.AccountInfo<Buffer>;
+}
+export const toSales = async (
+  saleResponses: Response[],
+  connection: web3.Connection
+): Promise<Sales> => {
+  let burner = web3.Keypair.generate();
+  let rawSales: RawSale[] = [];
+  let tokenAccountPromises = saleResponses.map((response) => {
+    //for every single one, fetch token account and see if mint is good
+    let sale = decodeSaleAccount(response.account.data, response.pubkey);
+    rawSales.push(sale);
+    let ThisToken = new Token(
+      connection,
+      sale.tokenMint,
+      TOKEN_PROGRAM_ID,
+      burner
+    );
+    return ThisToken.getAccountInfo(sale.tokenAccount);
+  });
+  const tokenAccounts = await Promise.all(tokenAccountPromises);
+  const zero = new BN(0);
+  let activeSales: Sale[] = [];
+  let zeroSales: Sale[] = [];
+  tokenAccounts.forEach((tokenAccount, index) => {
+    if (
+      tokenAccount.delegate.equals(BOOK_AUTHORITY_PK) &&
+      tokenAccount.delegatedAmount > zero
+    ) {
+      activeSales.push(toSale(rawSales[index], tokenAccount.delegatedAmount));
+    } else {
+      zeroSales.push(toSale(rawSales[index], tokenAccount.delegatedAmount));
+    }
+  });
+  return { active: activeSales, zero: zeroSales };
+};
+const toSale = (rawSale: RawSale, amount: BN) => {
+  return {
+    publicKey: rawSale.publicKey,
+    seller: rawSale.seller,
+    tokenAccount: rawSale.tokenAccount,
+    tokenMint: rawSale.tokenMint,
+    tokenPrice: rawSale.tokenPrice,
+    amount: amount,
+  };
+};
+
 export const printSale = (sale: Sale) => {
-  let s = {
+  console.log(toReadable(sale));
+};
+const toReadable = (sale: Sale) => {
+  return {
     publicKey: sale.publicKey.toBase58(),
     seller: sale.seller.toBase58(),
     tokenAccount: sale.seller.toBase58(),
     tokenMint: sale.tokenMint.toBase58(),
     tokenPrice: sale.tokenPrice.toString(),
+    amount: sale.amount.toString(),
   };
-  console.log(s);
-  console.log(sale.tokenPrice.toString());
+};
+const printSales = (sales: Sales) => {
+  console.log("active: ");
+  sales.active.forEach((sale) => {
+    console.log(toReadable(sale));
+  });
+  console.log("zero: ");
+  sales.zero.forEach((sale) => {
+    console.log(toReadable(sale));
+  });
 };
 const publicKey = (property: string) => {
   return BufferLayout.blob(32, property);
@@ -374,7 +444,6 @@ export const SaleLayout = BufferLayout.struct([
   BufferLayout.nu64("tokenPrice"),
   BufferLayout.u8("bump"),
 ]);
-
 const printTokenBalance = async (
   tokenAccount: web3.PublicKey,
   connection: web3.Connection,
@@ -392,6 +461,27 @@ const printLampsBalance = async (
   console.log(name + " lamps: " + balance);
 };
 
+//probably don't need
+export const fetchRawSalesForWallet = async (
+  wallet: PublicKey,
+  connection: web3.Connection
+) => {
+  return fetchSaleAccountsForWallet(wallet, connection).then((responses) => {
+    return responses.map((response) => {
+      return decodeSaleAccount(response.account.data, response.pubkey);
+    });
+  });
+};
+export const fetchRawSalesForMint = async (
+  mint: PublicKey,
+  connection: web3.Connection
+) => {
+  return fetchSaleAccountsForMint(mint, connection).then((responses) => {
+    return responses.map((response) => {
+      return decodeSaleAccount(response.account.data, response.pubkey);
+    });
+  });
+};
 /*
 write out my fetches
 

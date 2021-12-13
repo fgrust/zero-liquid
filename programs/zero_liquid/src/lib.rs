@@ -2,6 +2,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::AccountsClose;
 use anchor_spl::token;
 mod anchor_transfer;
+//this is how i should set it up for a refactor
 declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
 const AUTHORITY_SEED: &[u8] = b"auth";
 const SALE_SEED: &[u8] = b"sale";
